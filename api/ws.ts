@@ -27,15 +27,16 @@ wss.on("connection",(ws)=>{
     if(client)throw Error("already_joined");
     if(typeof m.room!=="string"||!ROOM_RE.test(m.room)||typeof m.clientId!=="string"||!/^[A-Za-z0-9_-]{8,64}$/.test(m.clientId))throw Error("invalid_join");
     client={ws,room:m.room,clientId:m.clientId};const set=rooms.get(m.room)??new Set<Client>();set.add(client);rooms.set(m.room,set);
-    await redis();const snap=await pub!.get<Track>(roomKey(m.room));
+    await redis();const snapshotRaw=await pub!.get(roomKey(m.room));
+    const snap=snapshotRaw?JSON.parse(snapshotRaw) as Track:null;
     send(ws,{type:"welcome",clientId:m.clientId,serverTimeMs:Date.now(),protocol:1});
-    send(ws,{type:"snapshot",serverTimeMs:Date.now(),track:snap??null});
+    send(ws,{type:"snapshot",serverTimeMs:Date.now(),track:snap});
     return;
    }
    if(!client)throw Error("join_required");
    if(!await rateLimit(client.room,client.clientId))throw Error("rate_limited");
    if(m.type==="time_ping"){if(typeof m.clientTimeMs!=="number"||!Number.isFinite(m.clientTimeMs))throw Error("invalid_time");send(ws,{type:"time_pong",clientTimeMs:m.clientTimeMs,serverTimeMs:Date.now()});return;}
-   if(m.type==="sync"){const snap=await (await redis()).get<Track>(roomKey(client.room));send(ws,{type:"snapshot",serverTimeMs:Date.now(),track:snap??null});return;}
+   if(m.type==="sync"){const rawSnapshot=await (await redis()).get(roomKey(client.room));const snap=rawSnapshot?JSON.parse(rawSnapshot) as Track:null;send(ws,{type:"snapshot",serverTimeMs:Date.now(),track:snap??null});return;}
    if(m.type==="play"){
     if(typeof m.trackId!=="string"||!ID_RE.test(m.trackId)||typeof m.songName!=="string"||!ID_RE.test(m.songName)||typeof m.dimension!=="string"||!DIM_RE.test(m.dimension)||!validCoord(m.x)||!validCoord(m.y)||!validCoord(m.z)||typeof m.startAtServerMs!=="number"||!Number.isSafeInteger(m.startAtServerMs)||m.startAtServerMs<Date.now()-5000||m.startAtServerMs>Date.now()+120000)throw Error("invalid_play");
     const track:Track={trackId:m.trackId,songName:m.songName,dimension:m.dimension,x:m.x,y:m.y,z:m.z,startAtServerMs:m.startAtServerMs,sourceClientId:client.clientId};
