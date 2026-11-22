@@ -59,3 +59,20 @@ The `fabric-client/` directory contains the Java 25 Fabric client module and `/c
 ## Local smoke test
 
 Run `npm install && npm run build`, set `REDIS_URL`, and deploy to Vercel. For a two-client live test, connect two WebSocket clients to the deployed URL, join with the same room, publish a play and stop from client A, and request sync from client B. See `scripts/smoke-test.mjs`. A live test requires a deployed URL and Redis credentials; neither is committed.
+
+
+## Current implementation status
+
+The relay endpoint, Redis-backed room snapshots, cross-instance Pub/Sub fan-out, message validation, rate limiting, Java 25 WebSocket client, clock-offset estimation, scheduled resource-pack playback, reconnect loop and snapshot playback recovery are present in this initial implementation.
+
+**Not yet complete / not yet verified:** automatic detection of a named `minecraft:music_disc_blocks` insertion and automatic stop-event emission from the Fabric client are not wired to a Minecraft 26.2 client-side interaction hook. The client currently has connect/status/disconnect commands and can consume relay events, but it does not originate jukebox play/stop events itself. A Vercel deployment, Redis provisioning, Gradle compilation against the exact 26.2 toolchain, and a live two-client test have not been performed from this repository session.
+
+Expected command syntax after the client command is installed:
+
+```text
+/c418music connect "wss://YOUR-DEPLOYMENT.vercel.app/api/ws" ROOMCODE
+/c418music status
+/c418music disconnect
+```
+
+The server is not usable until a Redis Marketplace database is linked and the Vercel project is deployed.
