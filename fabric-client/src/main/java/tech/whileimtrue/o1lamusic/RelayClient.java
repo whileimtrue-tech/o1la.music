@@ -6,6 +6,12 @@ import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.resources.sounds.SimpleSoundInstance;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.resources.Identifier;
+import net.minecraft.util.RandomSource;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -17,6 +23,8 @@ public final class RelayClient {
     private volatile String room="";
     private volatile long serverOffsetMs=0;
     private volatile String status="Disconnected";
+    private volatile String activeTrackId="";
+    private volatile Identifier activeSoundId;
     private final AtomicBoolean closing=new AtomicBoolean(false);
 
     public void connect(String endpoint,String room,java.util.function.Consumer<String> log) {
@@ -32,11 +40,34 @@ public final class RelayClient {
     public void disconnect(){closing.set(true);WebSocket s=socket;if(s!=null)s.sendClose(WebSocket.NORMAL_CLOSURE,"client disconnect");status="Disconnected";}
     public String status(){return status+" | room="+room+" | serverOffsetMs="+serverOffsetMs;}
     private void send(JsonObject o){WebSocket s=socket;if(s!=null)s.sendText(o.toString(),true);}
+    private void handleTrack(JsonObject m,java.util.function.Consumer<String> log) {
+        String action=m.get("action").getAsString();
+        String trackId=m.get("trackId").getAsString();
+        String dimension=m.has("dimension")?m.get("dimension").getAsString():"";
+        Minecraft game=Minecraft.getInstance();
+        if(action.equals("stop")) {
+            if(trackId.equals(activeTrackId)&&activeSoundId!=null)game.execute(()->game.getSoundManager().stop(activeSoundId,SoundSource.RECORDS));
+            if(trackId.equals(activeTrackId)){activeTrackId="";activeSoundId=null;}
+            log.accept("Stopped track "+trackId);return;
+        }
+        String song=m.get("songName").getAsString();
+        Identifier soundId=Identifier.fromNamespaceAndPath("c418music",song);
+        long startAt=m.get("startAtServerMs").getAsLong();
+        long delay=Math.max(0,startAt-(System.currentTimeMillis()+serverOffsetMs));
+        activeTrackId=trackId;activeSoundId=soundId;
+        scheduler.schedule(()->game.execute(()->{
+            if(!trackId.equals(activeTrackId))return;
+            SoundEvent event=SoundEvent.createVariableRangeEvent(soundId);
+            double x=m.get("x").getAsDouble()+0.5,y=m.get("y").getAsDouble()+0.5,z=m.get("z").getAsDouble()+0.5;
+            game.getSoundManager().play(new SimpleSoundInstance(event,SoundSource.RECORDS,1.0F,1.0F,RandomSource.create(),x,y,z));
+            log.accept("Playing c418music:"+song+" in "+dimension);
+        }),delay,TimeUnit.MILLISECONDS);
+    }
     private final class Listener implements WebSocket.Listener {
         private final java.util.function.Consumer<String> log; private final String endpoint; private StringBuilder fragments=new StringBuilder();
         Listener(java.util.function.Consumer<String> log,String endpoint){this.log=log;this.endpoint=endpoint;}
         @Override public void onOpen(WebSocket ws){socket=ws;status="Connected";JsonObject j=new JsonObject();j.addProperty("type","join");j.addProperty("room",room);j.addProperty("clientId",UUID.randomUUID().toString().replace("-",""));ws.sendText(j.toString(),true);ws.request(1);scheduler.scheduleAtFixedRate(()->{if(socket==ws&&ws.isOutputClosed()==false){JsonObject p=new JsonObject();p.addProperty("type","time_ping");p.addProperty("clientTimeMs",System.currentTimeMillis());ws.sendText(p.toString(),true);}},0,5,TimeUnit.SECONDS);}
-        @Override public CompletionStage<?> onText(WebSocket ws,CharSequence data,boolean last){fragments.append(data);if(last){try{JsonObject m=JsonParser.parseString(fragments.toString()).getAsJsonObject();String type=m.has("type")?m.get("type").getAsString():"";if(type.equals("time_pong")){long sent=m.get("clientTimeMs").getAsLong();long recv=System.currentTimeMillis();serverOffsetMs=m.get("serverTimeMs").getAsLong()-(sent+recv)/2;}else if(type.equals("welcome")){status="Connected";log.accept("Connected; clock synchronized soon");}else if(type.equals("snapshot")){log.accept("Snapshot: "+m.get("track"));}else if(type.equals("track")){log.accept("Track event: "+m); /* Playback adapter: resolve resource-pack sound ID and schedule at startAtServerMs. */}else if(type.equals("error")){log.accept("Relay error: "+m.get("code"));}}catch(Exception e){log.accept("Invalid relay response: "+e.getMessage());}fragments.setLength(0);}ws.request(1);return null;}
+        @Override public CompletionStage<?> onText(WebSocket ws,CharSequence data,boolean last){fragments.append(data);if(last){try{JsonObject m=JsonParser.parseString(fragments.toString()).getAsJsonObject();String type=m.has("type")?m.get("type").getAsString():"";if(type.equals("time_pong")){long sent=m.get("clientTimeMs").getAsLong();long recv=System.currentTimeMillis();serverOffsetMs=m.get("serverTimeMs").getAsLong()-(sent+recv)/2;}else if(type.equals("welcome")){status="Connected";log.accept("Connected; clock synchronized soon");}else if(type.equals("snapshot")){log.accept("Snapshot: "+m.get("track"));}else if(type.equals("track")){handleTrack(m,log);}else if(type.equals("error")){log.accept("Relay error: "+m.get("code"));}}catch(Exception e){log.accept("Invalid relay response: "+e.getMessage());}fragments.setLength(0);}ws.request(1);return null;}
         @Override public CompletionStage<?> onClose(WebSocket ws,int statusCode,String reason){if(socket==ws)socket=null;if(!closing.get()){status="Reconnecting";scheduler.schedule(()->connectAttempt(endpoint,log,1),2,TimeUnit.SECONDS);}return null;}
         @Override public void onError(WebSocket ws,Throwable error){log.accept("WebSocket: "+error.getMessage());}
     }
