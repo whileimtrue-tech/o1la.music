@@ -44,7 +44,7 @@ wss.on("connection",(ws)=>{
    }
    if(m.type==="stop"){
     if(typeof m.trackId!=="string"||!ID_RE.test(m.trackId)||typeof m.dimension!=="string"||!DIM_RE.test(m.dimension)||!validCoord(m.x)||!validCoord(m.y)||!validCoord(m.z))throw Error("invalid_stop");
-    const r=await redis();const current=await r.get<Track>(roomKey(client.room));if(current&&current.trackId===m.trackId&&current.dimension===m.dimension&&current.x===m.x&&current.y===m.y&&current.z===m.z)await r.del(roomKey(client.room));
+    const r=await redis();const currentRaw=await r.get(roomKey(client.room));const current=currentRaw?JSON.parse(currentRaw) as Track:null;if(current&&current.trackId===m.trackId&&current.dimension===m.dimension&&current.x===m.x&&current.y===m.y&&current.z===m.z)await r.del(roomKey(client.room));
     await publish(client.room,{type:"track",action:"stop",trackId:m.trackId,dimension:m.dimension,x:m.x,y:m.y,z:m.z,serverTimeMs:Date.now()});return;
    }
    throw Error("unknown_type");
