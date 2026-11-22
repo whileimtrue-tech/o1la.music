@@ -7,7 +7,16 @@ type Track = { trackId:string; songName:string; dimension:string; x:number;y:num
 type Client = { ws:WebSocket; room:string; clientId:string };
 const MAX_MESSAGE=4096, ROOM_RE=/^[A-Za-z0-9_-]{4,32}$/, ID_RE=/^[a-z0-9_.-]{1,96}$/, DIM_RE=/^[a-z0-9_.-]+:[a-z0-9_./-]+$/;
 const rooms=new Map<string,Set<Client>>();
-const server=createServer();
+const server=createServer((req,res)=>{
+ const path=new URL(req.url??"/","http://localhost").pathname;
+ if(req.method==="GET"&&(path==="/"||path==="/health")){
+  res.writeHead(200,{"content-type":"application/json; charset=utf-8"});
+  res.end(JSON.stringify({ok:true,service:"o1la.music-relay",websocket:"/api/ws"}));
+  return;
+ }
+ res.writeHead(404,{"content-type":"application/json; charset=utf-8"});
+ res.end(JSON.stringify({ok:false,error:"not_found"}));
+});
 const wss=new WebSocketServer({noServer:true,maxPayload:MAX_MESSAGE,perMessageDeflate:false});
 let pub:RedisClientType|undefined, sub:RedisClientType|undefined, redisReady:Promise<void>|undefined;
 const roomKey=(r:string)=>`o1la:room:${r}:snapshot`;
