@@ -1,30 +1,40 @@
 # o1la.music — Minecraft music relay
 
-A client-only Fabric music relay. The Paper server is untouched: clients connect directly to the relay over **WSS**.
+A client-only Fabric music relay. The Paper server is untouched: Minecraft clients connect directly to this relay over **WSS**.
 
-## Architecture
+## Deploy to Render
 
-- Vercel Function WebSocket endpoint: `/api/ws` (Vercel WebSocket support; Fluid Compute).
-- Redis (Marketplace) holds each room's authoritative current-track snapshot with a 24-hour TTL.
-- Redis Pub/Sub fans events out across function instances. Function memory is only a transient connection registry, never authoritative room state.
-- Clients reconnect with exponential backoff and request a snapshot after joining.
+Create a **Web Service** from this GitHub repository.
 
-## Deploy
+- Runtime: Node
+- Build Command: `npm install && npm run build`
+- Start Command: `npm start`
+- Instance type: any always-on instance suitable for your usage
+- Health Check Path: leave blank (no HTTP health route is currently provided)
 
-1. Import this repository into Vercel and select the project.
-2. In Vercel **Storage / Marketplace**, add a Redis database (Redis Cloud or Upstash for Redis). Link it to this project.
-3. Ensure the integration exposes `REDIS_URL` (Redis Cloud) to Production, Preview and Development. If using Upstash's REST-only integration, this Node `redis` Pub/Sub adapter is not compatible; use a Redis Marketplace database that provides a native Redis URL / TCP endpoint.
-4. Enable Fluid Compute for the project. WebSockets are supported by Vercel Functions; connection duration is still bounded by the Function maximum duration.
-5. Deploy. Endpoint: `wss://YOUR-DEPLOYMENT.vercel.app/api/ws` (no custom port; HTTPS/WSS standard port 443).
-6. Set the maximum function duration to suit your plan. Clients reconnect automatically.
+The service listens on `0.0.0.0:$PORT`. WebSocket endpoint after deployment:
 
-No static secret is needed by the Fabric client. Do not expose `REDIS_URL` to clients.
+`wss://YOUR-SERVICE.onrender.com/api/ws`
+
+Render supports WebSocket connections. Clients should reconnect automatically if the service restarts or an instance connection is interrupted.
+
+## Redis
+
+The relay requires a native Redis connection URL because it uses Redis commands and Pub/Sub.
+
+1. Create a Redis database with a provider that supplies a native TCP/TLS Redis URL.
+2. In Render, open your Web Service → **Environment**.
+3. Add `REDIS_URL` with the provider's private or public connection URL, for example `rediss://default:YOUR_PASSWORD@YOUR_HOST:6379`.
+4. Save changes and redeploy.
+
+Do not commit the Redis URL or expose it to Fabric clients. REST-only Redis endpoints are not compatible with this Node Redis Pub/Sub implementation.
 
 ## Environment
 
 | Variable | Required | Description |
 |---|---:|---|
-| `REDIS_URL` | yes | Redis native connection URL, e.g. `rediss://default:…@…:6379`. Server-side only. |
+| `PORT` | No | Supplied by Render; defaults to 10000 for local runs. |
+| `REDIS_URL` | Yes | Native Redis connection URL. Server-side only. |
 
 ## WebSocket JSON protocol
 
@@ -40,39 +50,36 @@ All messages are JSON objects. The first client message must be `join`. Maximum 
 
 ### Server → client
 
-- `welcome`: `{"type":"welcome","clientId":"…","serverTimeMs":1730000000000,"protocol":1}`
-- `snapshot`: `{"type":"snapshot","serverTimeMs":1730000000000,"track":null}` or the current track object.
-- `track`: `{"type":"track","action":"play",…track,"serverTimeMs":…}` or `action:"stop"`.
-- `time_pong`: echoes `clientTimeMs` and includes `serverTimeMs`.
-- `error`: `{"type":"error","code":"invalid_play"}`.
+- `welcome`: client ID, server time and protocol version.
+- `snapshot`: current room track, or `null`.
+- `track`: play/stop event.
+- `time_pong`: echoed client time and server time.
+- `error`: machine-readable error code.
 
-A track snapshot contains `trackId`, `songName`, `dimension`, `x/y/z`, `startAtServerMs`, and `sourceClientId`. Server time is Unix epoch milliseconds. Estimate offset with the midpoint of the ping round trip; schedule playback against server time plus this offset. On reconnect, join then reconcile the snapshot.
+Redis stores each room's authoritative current-track snapshot for 24 hours. Redis Pub/Sub distributes events across service instances. Estimate clock offset using the midpoint of the ping round trip; schedule playback against server time plus that offset. On reconnect, join and reconcile the snapshot.
 
 ## Security and operational notes
 
-Track and song identifiers are restricted to lowercase resource-like IDs; dimensions must be namespaced identifiers. Coordinates must be finite and within ±30,000,000. Starts must be no more than 5 seconds in the past or 120 seconds ahead. Snapshot keys expire after 24 hours. Stop clears the snapshot only if its track and jukebox coordinates match the active track. The relay cannot verify that a player actually inserted a disc: it is client-authoritative, so use trusted/private room codes.
+Track and song identifiers are restricted to lowercase resource-like IDs; dimensions must be namespaced identifiers. Coordinates must be finite and within ±30,000,000. Starts must be no more than 5 seconds in the past or 120 seconds ahead. Stop clears the snapshot only if its track and jukebox coordinates match the active track. The relay cannot verify that a player actually inserted a disc: it is client-authoritative, so use trusted/private room codes.
 
 ## Fabric client
 
 The `fabric-client/` directory contains the Java 25 Fabric client module and `/c418music connect` command. The client-side resource pack should provide sound events under the `c418music` namespace matching the configured track IDs.
 
-## Local smoke test
+Expected command syntax after the client command is installed:
 
-Run `npm install && npm run build`, set `REDIS_URL`, and deploy to Vercel. For a two-client live test, connect two WebSocket clients to the deployed URL, join with the same room, publish a play and stop from client A, and request sync from client B. See `scripts/smoke-test.mjs`. A live test requires a deployed URL and Redis credentials; neither is committed.
+```text
+/c418music connect "wss://YOUR-SERVICE.onrender.com/api/ws" ROOMCODE
+/c418music status
+/c418music disconnect
+```
 
+## Local build and smoke test
+
+Run `npm install && npm run build`. Set `REDIS_URL`, then `npm start`. For a two-client live test, set `WS_URL=wss://YOUR-SERVICE.onrender.com/api/ws` and run `node scripts/smoke-test.mjs`.
 
 ## Current implementation status
 
 The relay endpoint, Redis-backed room snapshots, cross-instance Pub/Sub fan-out, message validation, rate limiting, Java 25 WebSocket client, clock-offset estimation, scheduled resource-pack playback, reconnect loop and snapshot playback recovery are present in this initial implementation.
 
-**Not yet complete / not yet verified:** automatic detection of a named `minecraft:music_disc_blocks` insertion and automatic stop-event emission from the Fabric client are not wired to a Minecraft 26.2 client-side interaction hook. The client currently has connect/status/disconnect commands and can consume relay events, but it does not originate jukebox play/stop events itself. A Vercel deployment, Redis provisioning, Gradle compilation against the exact 26.2 toolchain, and a live two-client test have not been performed from this repository session.
-
-Expected command syntax after the client command is installed:
-
-```text
-/c418music connect "wss://YOUR-DEPLOYMENT.vercel.app/api/ws" ROOMCODE
-/c418music status
-/c418music disconnect
-```
-
-The server is not usable until a Redis Marketplace database is linked and the Vercel project is deployed.
+**Not yet complete / not yet verified:** automatic detection of a named `minecraft:music_disc_blocks` insertion and automatic stop-event emission from the Fabric client are not wired to a Minecraft 26.2 client-side interaction hook. The client currently has connect/status/disconnect commands and can consume relay events, but it does not originate jukebox play/stop events itself. Render deployment, Redis provisioning, Gradle compilation against the exact 26.2 toolchain, and a live two-client test have not been performed from this repository session.
